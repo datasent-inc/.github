@@ -1,13 +1,24 @@
-name: Asana Issue Sync (Reusable)
+name: Asana Sync (Reusable)
 
-# Syncs GitHub issue events to linked Asana tasks.
-# Convention: issue body contains "Asana: <gid>" or full Asana task URL.
+# Syncs GitHub issue lifecycle events to linked Asana tasks.
+#
+# Architecture:
+#   Asana stories/features  <-->  GitHub Issues  <--  PRs
+#   (product level)                (technical)        (code)
+#
+# The Asana link lives on the GitHub Issue, not on PRs. Developers work
+# PRs against Issues using normal "Closes #123" workflow -- no Asana
+# awareness required. When a PR merges and closes the issue, this
+# workflow updates the Asana task automatically.
+#
+# Convention: issue body contains "Asana: <gid>" or a full Asana task URL.
+# This is set once when the issue is created (by PM or automation).
 #
 # Behavior:
-#   issue opened   -> comment on Asana
-#   issue closed   -> mark Asana task complete
-#   issue reopened -> unmark Asana task complete
-#   comment added  -> mirror comment to Asana
+#   issue opened   -> comment on Asana task
+#   issue closed   -> comment + mark Asana task complete
+#   issue reopened -> comment + unmark Asana task complete
+#   comment added  -> optionally mirror to Asana (mirror_comments input)
 
 on:
   workflow_call:
@@ -32,12 +43,19 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
           COMBINED="${ISSUE_TITLE}"$'\n'"${ISSUE_BODY}"
-          # Matches classic (app.asana.com/0/{project}/{task}) and new (/task/{task}) formats
+          # Matches both Asana URL formats:
+          #   Classic: https://app.asana.com/0/{project_gid}/{task_gid}
+          #   New:     https://app.asana.com/1/{workspace}/project/{project}/task/{task_gid}
           TASK_GID=$(echo "$COMBINED" | grep -oE 'app\.asana\.com/[^ ]+/[0-9]{10,}' | grep -oE '[0-9]{10,}$' | head -1)
           if [ -z "$TASK_GID" ]; then
             TASK_GID=$(echo "$COMBINED" | grep -oiE 'asana:?[[:space:]]*([0-9]{10,})' | grep -oE '[0-9]{10,}' | head -1)
           fi
           echo "task_gid=${TASK_GID}" >> "$GITHUB_OUTPUT"
+          if [ -z "$TASK_GID" ]; then
+            echo "No Asana task reference found in issue -- skipping sync"
+          else
+            echo "Found Asana task GID: $TASK_GID"
+          fi
 
       - name: Post comment on issue event
         if: steps.extract.outputs.task_gid != '' && github.event_name == 'issues'
