@@ -17,9 +17,12 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           # Look for Asana URL in PR body or title
-          # Matches: https://app.asana.com/.../task/<GID> or Asana: <GID>
+          # Matches both URL formats:
+          #   Classic: https://app.asana.com/0/{project_gid}/{task_gid}
+          #   New:     https://app.asana.com/1/{workspace}/project/{project}/task/{task_gid}
+          # Also matches: Asana: <GID>
           COMBINED="${PR_TITLE}"$'\n'"${PR_BODY}"
-          TASK_GID=$(echo "$COMBINED" | grep -oE 'app\.asana\.com/[^ ]+/task/[0-9]+' | grep -oE '[0-9]+$' | head -1)
+          TASK_GID=$(echo "$COMBINED" | grep -oE 'app\.asana\.com/[^ ]+/[0-9]{10,}' | grep -oE '[0-9]{10,}$' | head -1)
           if [ -z "$TASK_GID" ]; then
             TASK_GID=$(echo "$COMBINED" | grep -oiE 'asana:?[[:space:]]*([0-9]{10,})' | grep -oE '[0-9]{10,}' | head -1)
           fi

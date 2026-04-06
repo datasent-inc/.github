@@ -32,7 +32,8 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
           COMBINED="${ISSUE_TITLE}"$'\n'"${ISSUE_BODY}"
-          TASK_GID=$(echo "$COMBINED" | grep -oE 'app\.asana\.com/[^ ]+/task/[0-9]+' | grep -oE '[0-9]+$' | head -1)
+          # Matches classic (app.asana.com/0/{project}/{task}) and new (/task/{task}) formats
+          TASK_GID=$(echo "$COMBINED" | grep -oE 'app\.asana\.com/[^ ]+/[0-9]{10,}' | grep -oE '[0-9]{10,}$' | head -1)
           if [ -z "$TASK_GID" ]; then
             TASK_GID=$(echo "$COMBINED" | grep -oiE 'asana:?[[:space:]]*([0-9]{10,})' | grep -oE '[0-9]{10,}' | head -1)
           fi

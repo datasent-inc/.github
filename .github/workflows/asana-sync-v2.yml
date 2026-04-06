@@ -48,7 +48,8 @@ jobs:
           COMBINED="${PR_TITLE}"$'\n'"${PR_BODY}"
 
           # 1. Try full Asana URL in body or title
-          TASK_GID=$(echo "$COMBINED" | grep -oE 'app\.asana\.com/[^ ]+/task/[0-9]+' | grep -oE '[0-9]+$' | head -1)
+          # Matches classic (app.asana.com/0/{project}/{task}) and new (/task/{task}) formats
+          TASK_GID=$(echo "$COMBINED" | grep -oE 'app\.asana\.com/[^ ]+/[0-9]{10,}' | grep -oE '[0-9]{10,}$' | head -1)
 
           # 2. Try "Asana: <gid>" shorthand
           if [ -z "$TASK_GID" ]; then
