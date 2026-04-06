@@ -1,0 +1,39 @@
+name: Asana Board Sync
+
+# Syncs Asana tasks to the GitHub Projects board (project-planning #3).
+#
+# - Linked issues get added to the board with correct Status/Priority/Size
+# - Unlinked Asana tasks become draft items on the board for engineering triage
+# - Runs daily on weekdays and on manual trigger
+#
+# Deploy: copy sync_asana_github.py and this workflow to datasent-inc/.github
+#   .github/workflows/asana-board-sync.yml   (this file)
+#   tools/sync_asana_github.py               (the sync script)
+#
+# Requires org secret: ASANA_PAT
+
+on:
+  schedule:
+    - cron: "0 8 * * 1-5"   # weekdays at 8am UTC
+  workflow_dispatch:         # manual trigger from Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      repository-projects: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run board sync
+        env:
+          ASANA_PAT: ${{ secrets.ASANA_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/sync_asana_github.py
