@@ -1,0 +1,163 @@
+name: Asana Sync v2 (Reusable, extended)
+
+# Extensions over v1:
+#   1. Branch name fallback (e.g., asana/1234567890-description)
+#   2. Optional: move task to section on state change
+#   3. Optional: add GitHub label derived from task's current section
+#
+# Drop into datasent-inc/.github/.github/workflows/ alongside or replacing asana-sync.yml
+
+on:
+  workflow_call:
+    inputs:
+      section_in_progress:
+        description: "Asana section GID to move to when PR opens (empty to skip)"
+        required: false
+        type: string
+        default: ""
+      section_in_review:
+        description: "Asana section GID to move to when PR is ready for review"
+        required: false
+        type: string
+        default: ""
+      section_done:
+        description: "Asana section GID to move to when PR merges"
+        required: false
+        type: string
+        default: ""
+      add_section_label:
+        description: "If true, add a GitHub label derived from the Asana task's current section"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      ASANA_PAT:
+        required: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract Asana task GID
+        id: extract
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BRANCH_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          COMBINED="${PR_TITLE}"$'\n'"${PR_BODY}"
+
+          # 1. Try full Asana URL in body or title
+          # Matches classic (app.asana.com/0/{project}/{task}) and new (/task/{task}) formats
+          TASK_GID=$(echo "$COMBINED" | grep -oE 'app\.asana\.com/[^ ]+/[0-9]{10,}' | grep -oE '[0-9]{10,}$' | head -1)
+
+          # 2. Try "Asana: <gid>" shorthand
+          if [ -z "$TASK_GID" ]; then
+            TASK_GID=$(echo "$COMBINED" | grep -oiE 'asana:?[[:space:]]*([0-9]{10,})' | grep -oE '[0-9]{10,}' | head -1)
+          fi
+
+          # 3. FALLBACK: parse branch name for asana/<gid>-description
+          if [ -z "$TASK_GID" ]; then
+            TASK_GID=$(echo "$BRANCH_REF" | grep -oE '^asana/[0-9]+' | grep -oE '[0-9]+' | head -1)
+            if [ -n "$TASK_GID" ]; then
+              echo "Found GID via branch name convention: $TASK_GID"
+            fi
+          fi
+
+          echo "task_gid=${TASK_GID}" >> "$GITHUB_OUTPUT"
+          [ -z "$TASK_GID" ] && echo "::notice::No Asana task reference found - skipping sync" || echo "Asana task GID: $TASK_GID"
+
+      - name: Determine action
+        id: action
+        if: steps.extract.outputs.task_gid != ''
+        env:
+          ACTION: ${{ github.event.action }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          SECTION_IN_PROGRESS: ${{ inputs.section_in_progress }}
+          SECTION_IN_REVIEW: ${{ inputs.section_in_review }}
+          SECTION_DONE: ${{ inputs.section_done }}
+        run: |
+          TARGET_SECTION=""
+          COMPLETE="false"
+          case "$ACTION" in
+            opened|reopened)
+              MESSAGE="PR opened: ${{ github.event.pull_request.html_url }} by @${{ github.event.pull_request.user.login }}"
+              TARGET_SECTION="$SECTION_IN_PROGRESS"
+              ;;
+            ready_for_review)
+              MESSAGE="PR ready for review: ${{ github.event.pull_request.html_url }}"
+              TARGET_SECTION="$SECTION_IN_REVIEW"
+              ;;
+            closed)
+              if [ "$MERGED" = "true" ]; then
+                MESSAGE="PR merged: ${{ github.event.pull_request.html_url }}"
+                TARGET_SECTION="$SECTION_DONE"
+                COMPLETE="true"
+              else
+                MESSAGE="PR closed without merge: ${{ github.event.pull_request.html_url }}"
+              fi
+              ;;
+            *) MESSAGE="" ;;
+          esac
+          echo "message=${MESSAGE}" >> "$GITHUB_OUTPUT"
+          echo "target_section=${TARGET_SECTION}" >> "$GITHUB_OUTPUT"
+          echo "complete=${COMPLETE}" >> "$GITHUB_OUTPUT"
+
+      - name: Post comment to Asana
+        if: steps.action.outputs.message != ''
+        env:
+          ASANA_PAT: ${{ secrets.ASANA_PAT }}
+          TASK_GID: ${{ steps.extract.outputs.task_gid }}
+          MESSAGE: ${{ steps.action.outputs.message }}
+        run: |
+          curl -sS -X POST "https://app.asana.com/api/1.0/tasks/${TASK_GID}/stories" \
+            -H "Authorization: Bearer ${ASANA_PAT}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg text "$MESSAGE" '{data: {text: $text}}')" \
+            --fail-with-body
+
+      - name: Move task to target section
+        if: steps.action.outputs.target_section != ''
+        env:
+          ASANA_PAT: ${{ secrets.ASANA_PAT }}
+          TASK_GID: ${{ steps.extract.outputs.task_gid }}
+          SECTION_GID: ${{ steps.action.outputs.target_section }}
+        run: |
+          curl -sS -X POST "https://app.asana.com/api/1.0/sections/${SECTION_GID}/addTask" \
+            -H "Authorization: Bearer ${ASANA_PAT}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg task "$TASK_GID" '{data: {task: $task}}')" \
+            --fail-with-body
+
+      - name: Mark task complete
+        if: steps.action.outputs.complete == 'true'
+        env:
+          ASANA_PAT: ${{ secrets.ASANA_PAT }}
+          TASK_GID: ${{ steps.extract.outputs.task_gid }}
+        run: |
+          curl -sS -X PUT "https://app.asana.com/api/1.0/tasks/${TASK_GID}" \
+            -H "Authorization: Bearer ${ASANA_PAT}" \
+            -H "Content-Type: application/json" \
+            -d '{"data": {"completed": true}}' \
+            --fail-with-body
+
+      - name: Add section-derived GitHub label
+        if: inputs.add_section_label && steps.extract.outputs.task_gid != '' && github.event.action == 'opened'
+        env:
+          ASANA_PAT: ${{ secrets.ASANA_PAT }}
+          TASK_GID: ${{ steps.extract.outputs.task_gid }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          SECTION_NAME=$(curl -sS "https://app.asana.com/api/1.0/tasks/${TASK_GID}?opt_fields=memberships.section.name,memberships.project.gid" \
+            -H "Authorization: Bearer ${ASANA_PAT}" \
+            | jq -r '.data.memberships[0].section.name // empty' \
+            | tr '[:upper:] ' '[:lower:]-' \
+            | sed 's/[^a-z0-9-]//g')
+          if [ -n "$SECTION_NAME" ]; then
+            LABEL="asana:${SECTION_NAME}"
+            echo "Adding label: $LABEL"
+            gh label create "$LABEL" --repo "$REPO" --color "f5d76e" --force 2>/dev/null || true
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "$LABEL"
+          fi
